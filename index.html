@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; script-src https://cdn.jsdelivr.net 'sha256-skPmcChfEUsHESbZhYfiqlaaDfkGU9vYdrsVnZjPJm8='; style-src 'unsafe-inline'; connect-src https://mzybytlhoxaiuuylgyur.supabase.co; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; script-src https://cdn.jsdelivr.net 'sha256-zl8t2pVvEjmP4mxfLKSoWQYUYoML60qfgf4qhK0gcLs='; style-src 'unsafe-inline'; connect-src https://mzybytlhoxaiuuylgyur.supabase.co; form-action 'none'">
   <title>Workspace access</title>
   <style>
     :root { color-scheme: light; font-family: system-ui, -apple-system, sans-serif; color: #152238; background: #f4f6f8; }
@@ -41,7 +41,10 @@
       <form id="login-form">
         <label for="email">Email address</label>
         <input id="email" type="email" autocomplete="email" inputmode="email" maxlength="254" required>
-        <button id="send-link" type="submit">Send sign-in link</button>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button id="sign-in" type="submit">Sign in</button>
+        <button id="send-link" class="secondary" type="button">Email a sign-in link instead</button>
       </form>
       <p id="login-result" class="muted" role="status" aria-live="polite"></p>
       <button id="resume" class="secondary" type="button">I have signed in — continue</button>
@@ -80,6 +83,7 @@
     let deciding = false;
     let canDecide = false;
     let sending = false;
+    let signingIn = false;
 
     function fail(message) {
       canDecide = false;
@@ -160,9 +164,31 @@
     }
     el('login-form').addEventListener('submit', async (event) => {
       event.preventDefault();
-      if (!auth || sending) return;
+      if (!auth || signingIn || sending || !el('login-form').reportValidity()) return;
+      signingIn = true;
+      el('sign-in').disabled = el('send-link').disabled = true;
+      clearError();
+      el('login-result').textContent = 'Signing in…';
+      try {
+        const { data, error } = await auth.signInWithPassword({
+          email: el('email').value.trim(),
+          password: el('password').value
+        });
+        if (error || !data?.session) throw error || new Error('Sign-in did not complete. Please try again.');
+        el('login-result').textContent = '';
+        await load();
+      } catch (_) {
+        el('login-result').textContent = 'Unable to sign in. Check your email and password, then try again.';
+      } finally {
+        el('password').value = '';
+        signingIn = false;
+        el('sign-in').disabled = el('send-link').disabled = false;
+      }
+    });
+    el('send-link').addEventListener('click', async () => {
+      if (!auth || sending || signingIn || !el('email').reportValidity()) return;
       sending = true;
-      el('send-link').disabled = true;
+      el('sign-in').disabled = el('send-link').disabled = true;
       clearError();
       el('login-result').textContent = 'Sending sign-in link…';
       try {
@@ -176,7 +202,7 @@
         el('login-result').textContent = 'Open the email link in this same browser. Then return here and tap Continue if necessary.';
       } catch (error) {
         el('login-result').textContent = error instanceof Error ? error.message : 'Unable to send a sign-in link.';
-      } finally { sending = false; el('send-link').disabled = false; }
+      } finally { sending = false; el('sign-in').disabled = el('send-link').disabled = false; }
     });
     el('approve').addEventListener('click', () => decide(true));
     el('deny').addEventListener('click', () => decide(false));
