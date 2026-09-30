@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; script-src https://cdn.jsdelivr.net 'sha256-skPmcChfEUsHESbZhYfiqlaaDfkGU9vYdrsVnZjPJm8='; style-src 'unsafe-inline'; connect-src https://mzybytlhoxaiuuylgyur.supabase.co; form-action 'none'">
+  <title>Workspace access</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, sans-serif; color: #152238; background: #f4f6f8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100svh; padding: 24px 16px; display: grid; place-items: center; }
+    main { width: min(100%, 500px); padding: 30px 24px; border: 1px solid #dbe2e9; border-radius: 18px; background: white; box-shadow: 0 10px 40px #1522380a; }
+    h1 { margin: 12px 0; font-size: 1.8rem; letter-spacing: -.04em; }
+    p { line-height: 1.55; }
+    .eyebrow { margin: 0; font-size: .75rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #557087; }
+    .muted, footer { color: #556477; font-size: .9rem; }
+    label, dt { display: block; margin-top: 18px; font-size: .88rem; font-weight: 650; }
+    dd { margin: 6px 0 18px; overflow-wrap: anywhere; }
+    input, button { box-sizing: border-box; width: 100%; min-height: 48px; border: 1px solid #c5d0db; border-radius: 9px; padding: 12px; font: inherit; }
+    input { margin-top: 8px; background: white; color: #152238; }
+    button { margin-top: 12px; cursor: pointer; background: #152238; color: white; border-color: #152238; font-weight: 600; }
+    button.secondary { background: white; color: #152238; border-color: #c5d0db; }
+    button:disabled { opacity: .55; cursor: wait; }
+    button:focus-visible, input:focus-visible { outline: 3px solid #679bc4; outline-offset: 3px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .error { color: #a52626; overflow-wrap: anywhere; }
+    .notice { border-top: 1px solid #e4e9ef; padding-top: 18px; margin-top: 24px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 360px) { main { padding: 24px 18px; } .actions { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Account authorization · Staging</p>
+    <h1>Workspace access</h1>
+    <p id="status" role="status" aria-live="polite">Loading request…</p>
+    <section id="login" hidden aria-label="Sign in">
+      <p>Use an existing, authorized account. This page does not create accounts or grant workspace access.</p>
+      <form id="login-form">
+        <label for="email">Email address</label>
+        <input id="email" type="email" autocomplete="email" inputmode="email" maxlength="254" required>
+        <button id="send-link" type="submit">Send sign-in link</button>
+      </form>
+      <p id="login-result" class="muted" role="status" aria-live="polite"></p>
+      <button id="resume" class="secondary" type="button">I have signed in — continue</button>
+    </section>
+    <section id="consent" hidden aria-label="Review access request">
+      <p id="account" class="muted"></p>
+      <dl>
+        <dt>Requesting application</dt><dd id="client"></dd>
+        <dt>Return address</dt><dd id="redirect"></dd>
+        <dt>Requested account permissions</dt><dd id="scopes"></dd>
+      </dl>
+      <p class="muted">Approve only an application you recognize. Workspace permissions are enforced separately by the server.</p>
+      <div class="actions">
+        <button id="deny" class="secondary" type="button">Deny</button>
+        <button id="approve" type="button">Approve</button>
+      </div>
+      <button id="switch-account" class="secondary" type="button">Use another account</button>
+    </section>
+    <p id="error" class="error" role="alert" hidden></p>
+    <button id="retry" class="secondary" type="button" hidden>Try again</button>
+    <footer class="notice">Sign-in and consent only. No documents or workspace records are hosted here.</footer>
+    <noscript><p>JavaScript is required for secure account authorization.</p></noscript>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js" integrity="sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script id="consent-app">
+  (() => {
+    'use strict';
+    const SUPABASE_URL = 'https://mzybytlhoxaiuuylgyur.supabase.co';
+    const PUBLISHABLE_KEY = 'sb_publishable_eyFaRXg5rrQQhqAwY07Xlg_BsEM5bPq';
+    const el = (id) => document.getElementById(id);
+    const parameters = new URL(window.location.href).searchParams;
+    const ids = parameters.getAll('authorization_id');
+    const authorizationId = ids.length === 1 ? ids[0] : '';
+    let auth;
+    let loading = false;
+    let deciding = false;
+    let canDecide = false;
+    let sending = false;
+
+    function fail(message) {
+      canDecide = false;
+      el('consent').hidden = true;
+      el('error').textContent = message;
+      el('error').hidden = false;
+      el('status').textContent = 'The request could not be completed.';
+      el('retry').hidden = false;
+    }
+    function clearError() {
+      el('error').hidden = true;
+      el('error').textContent = '';
+      el('retry').hidden = true;
+    }
+    function returnToClient(rawUrl) {
+      // Redirects come only from the authenticated provider response, never from query parameters.
+      const destination = new URL(rawUrl);
+      if (destination.protocol !== 'https:' || destination.username || destination.password) {
+        throw new Error('The application returned an unsupported address. An HTTPS address is required.');
+      }
+      window.location.assign(destination.href);
+    }
+    async function load() {
+      if (loading || deciding || !auth) return;
+      loading = true;
+      canDecide = false;
+      clearError();
+      el('consent').hidden = true;
+      el('login').hidden = true;
+      el('status').textContent = 'Checking your sign-in…';
+      try {
+        const { data: sessionData, error: sessionError } = await auth.getSession();
+        if (sessionError) throw sessionError;
+        if (!sessionData.session) {
+          el('status').textContent = 'Sign in to review this request.';
+          el('login').hidden = false;
+          return;
+        }
+        // A cached session is not treated as authoritative identity verification.
+        const { data: userData, error: userError } = await auth.getUser();
+        if (userError || !userData.user) throw userError || new Error('Please sign in again.');
+        const { data, error } = await auth.oauth.getAuthorizationDetails(authorizationId);
+        if (error || !data) throw error || new Error('Authorization request not found. Start again from your application.');
+        if (!('authorization_id' in data)) {
+          el('status').textContent = 'Returning to the application…';
+          returnToClient(data.redirect_url);
+          return;
+        }
+        if (data.authorization_id !== authorizationId) throw new Error('Authorization request mismatch.');
+        el('account').textContent = 'Signed in as ' + (userData.user.email || 'your account');
+        el('client').textContent = data.client?.name || 'Unnamed application';
+        el('redirect').textContent = data.redirect_uri || 'Not provided';
+        el('scopes').textContent = data.scope?.trim() || 'None specified';
+        el('status').textContent = 'Review the request before continuing.';
+        el('consent').hidden = false;
+        canDecide = true;
+      } catch (error) {
+        fail(error instanceof Error ? error.message : 'Unable to load authorization. Restart from the requesting application.');
+      } finally { loading = false; }
+    }
+    async function decide(approve) {
+      if (!canDecide || deciding) return;
+      deciding = true;
+      el('approve').disabled = el('deny').disabled = true;
+      clearError();
+      try {
+        const { data, error } = approve
+          ? await auth.oauth.approveAuthorization(authorizationId, { skipBrowserRedirect: true })
+          : await auth.oauth.denyAuthorization(authorizationId, { skipBrowserRedirect: true });
+        if (error || !data) throw error || new Error('The decision was not saved. Restart from the application.');
+        el('status').textContent = 'Returning to the application…';
+        returnToClient(data.redirect_url);
+      } catch (error) { fail(error instanceof Error ? error.message : 'Unable to save your decision.'); }
+      finally {
+        deciding = false;
+        el('approve').disabled = el('deny').disabled = false;
+      }
+    }
+    el('login-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!auth || sending) return;
+      sending = true;
+      el('send-link').disabled = true;
+      clearError();
+      el('login-result').textContent = 'Sending sign-in link…';
+      try {
+        const callback = new URL(window.location.pathname, window.location.origin);
+        callback.searchParams.set('authorization_id', authorizationId);
+        const { error } = await auth.signInWithOtp({
+          email: el('email').value.trim(),
+          options: { emailRedirectTo: callback.href, shouldCreateUser: false }
+        });
+        if (error) throw error;
+        el('login-result').textContent = 'Open the email link in this same browser. Then return here and tap Continue if necessary.';
+      } catch (error) {
+        el('login-result').textContent = error instanceof Error ? error.message : 'Unable to send a sign-in link.';
+      } finally { sending = false; el('send-link').disabled = false; }
+    });
+    el('approve').addEventListener('click', () => decide(true));
+    el('deny').addEventListener('click', () => decide(false));
+    el('resume').addEventListener('click', load);
+    el('retry').addEventListener('click', () => auth ? load() : window.location.reload());
+    el('switch-account').addEventListener('click', async () => {
+      if (!auth || deciding) return;
+      const { error } = await auth.signOut({ scope: 'local' });
+      if (error) fail(error.message); else await load();
+    });
+    if (window.top !== window.self) { fail('Open this page directly, not inside another website.'); return; }
+    if (!authorizationId || !/^[A-Za-z0-9_-]{1,256}$/.test(authorizationId)) {
+      el('status').textContent = 'This page is ready to receive an authorization request. Start the connection from your application, not from this page.';
+      return;
+    }
+    try {
+      if (!window.supabase?.createClient) throw new Error('The sign-in library did not load. Check your connection and reload the page.');
+      const client = window.supabase.createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
+        auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true,
+          autoRefreshToken: true, storageKey: 'oauth-consent-staging-auth-v1' }
+      });
+      auth = client.auth;
+      if (!auth.oauth?.getAuthorizationDetails) throw new Error('The sign-in library does not support authorization requests.');
+      auth.onAuthStateChange((event) => {
+        // Defer SDK calls until after its internal auth lock is released.
+        if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') window.setTimeout(load, 0);
+      });
+      load();
+    } catch (error) { fail(error instanceof Error ? error.message : 'Unable to initialize sign-in.'); }
+  })();
+  </script>
+</body>
+</html>
